@@ -46,7 +46,7 @@ export default {
   data() {
     return {
       doctorName: "Jhojan",
-      schedule: JSON.parse(localStorage.getItem("schedule")) || {},
+      schedule: {},
       days: ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"],
       showModal: false,
       selectedDay: "",
@@ -54,7 +54,33 @@ export default {
       endTime: ""
     };
   },
+  async created() {
+    await this.loadSchedules();
+  },
   methods: {
+    async loadSchedules() {
+      try {
+        const response = await fetch(`http://localhost:8080/horarios/${this.doctorName}`);
+        if (response.ok) {
+          const horarios = await response.json();
+          this.schedule = {};
+          
+          horarios.forEach(horario => {
+            this.schedule[horario.dia] = {
+              id: horario.id,
+              start: horario.hora_inicio?.substring(0, 5),
+              end: horario.hora_fin?.substring(0, 5),
+              selected: false
+            };
+          });
+          
+          localStorage.setItem("schedule", JSON.stringify(this.schedule));
+        }
+      } catch (error) {
+        console.error("Error cargando horarios:", error);
+      }
+    },
+
     toggleSelection(day) {
       if (!this.schedule[day]) {
         this.schedule[day] = { selected: true };
@@ -64,38 +90,29 @@ export default {
       if (this.schedule[day].selected) {
         this.openSchedule(day);
       }
-      this.$forceUpdate();
     },
 
     openSchedule(day) {
-      if (!day) return;
       this.selectedDay = day;
       this.startTime = this.schedule[day]?.start || "";
       this.endTime = this.schedule[day]?.end || "";
       this.showModal = true;
     },
-    saveSchedule() {
-  if (!this.selectedDay || !this.startTime || !this.endTime || this.startTime >= this.endTime) {
-    alert("Ingrese horas válidas.");
-    return;
-  }
 
-  const idHorario = this.schedule[this.selectedDay]?.id || null;
+    async saveSchedule() {
+      if (!this.selectedDay || !this.startTime || !this.endTime || this.startTime >= this.endTime) {
+        alert("Ingrese horas válidas.");
+        return;
+      }
 
-  // Guarda el horario con el ID
-  this.schedule[this.selectedDay] = {
-    start: this.startTime,
-    end: this.endTime,
-    id: idHorario,  // Almacena el ID
-  };
+      this.schedule[this.selectedDay] = {
+        ...this.schedule[this.selectedDay],
+        start: this.startTime,
+        end: this.endTime
+      };
 
-  console.log(this.schedule);  // Verifica en la consola que el id está allí
-
-  localStorage.setItem("schedule", JSON.stringify(this.schedule));
-  this.closeModal();
-}
-
-,
+      this.closeModal();
+    },
 
     closeModal() {
       this.showModal = false;
@@ -107,44 +124,35 @@ export default {
     },
 
     async deleteSchedule(day) {
-  if (!confirm(`¿Deseas eliminar el horario de ${day}?`)) {
-    return;
-  }
+      if (!confirm(`¿Deseas eliminar el horario de ${day}?`)) return;
 
-  const idHorario = this.schedule[day]?.id;
-  if (!idHorario) {
-    alert("No se encontró el ID del horario para eliminar.");
-    return;
-  }
+      const horario = this.schedule[day];
+      
+      if (horario?.id) {
+        try {
+          const response = await fetch(`http://localhost:8080/horarios/${horario.id}`, {
+            method: "DELETE"
+          });
 
-  try {
-    const response = await fetch(`http://localhost:8080/horarios/${idHorario}`, {
-      method: "DELETE"
-    });
-
-    if (!response.ok) {
-      if (response.status === 404) {
-        alert("El horario no existe en la base de datos.");
-      } else {
-        throw new Error(`Error HTTP: ${response.status}`);
+          if (response.ok) {
+            delete this.schedule[day];
+            localStorage.setItem("schedule", JSON.stringify(this.schedule));
+            this.closeModal();
+            return;
+          }
+          throw new Error("Error al eliminar");
+        } catch (error) {
+          alert("Error al eliminar del servidor");
+          console.error(error);
+          return;
+        }
       }
-      return;
-    }
-
-    // Si la eliminación fue exitosa, actualizamos el frontend
-    delete this.schedule[day];
-    localStorage.setItem("schedule", JSON.stringify(this.schedule));
-
-    alert("Horario eliminado exitosamente.");
-    this.closeModal();
-    this.$forceUpdate();
-  } catch (error) {
-    alert("Hubo un problema al eliminar el horario.");
-    console.error("Error al eliminar horario:", error);
-  }
-}
-
-,
+      
+      // Si no tenía ID (no estaba en el servidor)
+      delete this.schedule[day];
+      localStorage.setItem("schedule", JSON.stringify(this.schedule));
+      this.closeModal();
+    },
 
     async saveAllSchedules() {
       if (Object.keys(this.schedule).length === 0) {
@@ -152,12 +160,12 @@ export default {
         return;
       }
 
-      const horarios = Object.entries(this.schedule).map(([dia, { start, end, id }]) => ({
-        id: id || null,
+      const horarios = Object.entries(this.schedule).map(([dia, datos]) => ({
+        id: datos.id || null,
         doctor: this.doctorName,
         dia,
-        hora_inicio: start ? start + ":00" : null,
-        hora_fin: end ? end + ":00" : null
+        hora_inicio: datos.start ? datos.start + ":00" : null,
+        hora_fin: datos.end ? datos.end + ":00" : null
       }));
 
       try {
@@ -166,16 +174,28 @@ export default {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(horarios)
         });
-        if (!response.ok) throw new Error(`Error HTTP: ${response.status}`);
+
+        if (!response.ok) throw new Error("Error guardando horarios");
+        
+        const horariosActualizados = await response.json();
+        
+        // Actualizar los IDs en el frontend
+        horariosActualizados.forEach(horario => {
+          if (this.schedule[horario.dia]) {
+            this.schedule[horario.dia].id = horario.id;
+          }
+        });
+        
+        localStorage.setItem("schedule", JSON.stringify(this.schedule));
         alert("Horarios guardados exitosamente.");
       } catch (error) {
-        alert("Hubo un problema al guardar los horarios.");
+        alert("Error al guardar horarios");
+        console.error(error);
       }
     }
   }
 };
 </script>
-
 
 <style>
 /* Contenedor principal */
